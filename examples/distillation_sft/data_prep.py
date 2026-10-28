@@ -95,6 +95,7 @@ DATASET_SPECS: List[Dict[str, Any]] = [
     dict(
         name = "ciTy1504/security-agentic-sft-corpus",
         kind = "city1504_turns",
+        loader = "jsonl_files",
         max_rows = 2500,
         desc = "agentic security trajectories (cybench/autopenbench/CVE)",
     ),
@@ -145,6 +146,56 @@ DATASET_SPECS: List[Dict[str, Any]] = [
         desc = "MMLU auxiliary train QA",
     ),
 ]
+
+# ---------------------------------------------------------------------------
+# Tolerant loader: `datasets`'s json builder aborts the whole split when any
+# file has an invalid surrogate pair (seen in ciTy1504/autopenbench). Reading
+# the .jsonl files ourselves drops only the bad lines.
+# ---------------------------------------------------------------------------
+
+def _strip_surrogates(o):
+    if isinstance(o, str):
+        return o.encode("utf-8", errors = "replace").decode("utf-8")
+    if isinstance(o, list):
+        return [_strip_surrogates(x) for x in o]
+    if isinstance(o, dict):
+        return {k: _strip_surrogates(v) for k, v in o.items()}
+    return o
+
+
+def _load_jsonl_files_tolerant(spec, token = None):
+    from datasets import Dataset
+    from huggingface_hub import hf_hub_download, list_repo_files
+
+    repo = spec["name"]
+    files = [
+        f for f in list_repo_files(repo, repo_type = "dataset", token = token)
+        if f.endswith((".jsonl", ".json"))
+    ]
+    rows = []
+    for f in files:
+        path = hf_hub_download(repo, f, repo_type = "dataset", token = token)
+        if f.endswith(".json"):
+            try:
+                obj = json.load(open(path, encoding = "utf-8", errors = "replace"))
+                rows.extend(_strip_surrogates(r) for r in
+                            (obj if isinstance(obj, list) else [obj]))
+            except Exception:
+                pass
+            continue
+        with open(path, encoding = "utf-8", errors = "replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(_strip_surrogates(json.loads(line)))
+                except json.JSONDecodeError:
+                    continue
+    if not rows:
+        raise RuntimeError(f"no .jsonl rows loaded from {repo}")
+    return Dataset.from_list(rows)
+
 
 # ---------------------------------------------------------------------------
 # Normalizers: row -> {"messages": [...], "tools": [...]?} or None to drop.
@@ -296,12 +347,22 @@ def build_chat_dataset(
         kind = spec["kind"]
         normalize = NORMALIZERS[kind]
         try:
-            ds = load_dataset(
-                spec["name"],
-                spec.get("config"),
-                split = spec.get("split", "train"),
-                token = token,
-            )
+            if spec.get("loader") == "jsonl_files":
+                ds = _load_jsonl_files_tolerant(spec, token = token)
+            else:
+                split = spec.get("split", "train")
+                if spec.get("slice"):
+                    # Prefix-slice inside the split string so `datasets` only
+                    # generates what the cap can use (MMLU aux_train is ~100k
+                    # rows; generating all of it for a 64-row cap wastes ~1h).
+                    n = min(spec.get("max_rows", 64) * 8, 8000)
+                    split = f"{split}[:{n}]"
+                ds = load_dataset(
+                    spec["name"],
+                    spec.get("config"),
+                    split = split,
+                    token = token,
+                )
         except Exception as e:
             print(f"[data] SKIP {spec['name']}: {e}")
             continue

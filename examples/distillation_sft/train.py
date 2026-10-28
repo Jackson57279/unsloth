@@ -106,7 +106,7 @@ def main():
         max_seq_length = args.max_seq_length or 1024
         args.max_steps = 3
         specs = [
-            {**s, "max_rows": min(s.get("max_rows", 64), 64)}
+            {**s, "max_rows": min(s.get("max_rows", 64), 64), "slice": True}
             for s in specs
         ]
     elif args.per_source_cap is not None:
