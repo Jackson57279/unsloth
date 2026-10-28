@@ -170,12 +170,19 @@ def main():
                   f"sel {log_sel/50:.3f} ({el/step:.2f}s/st)", flush=True)
             log_loss, log_sel = 0.0, 0.0
 
+    # save first: eval must never be able to lose the trained weights
+    os.makedirs(args.out_dir, exist_ok=True)
+    model.config.auto_map = {"AutoModel": "dflash.DFlash2DraftModel"}
+    model.save_pretrained(args.out_dir)
+    print(f"[train] saved to {args.out_dir}", flush=True)
+
     # --- eval: block top-1 / top-3 accuracy on held-out seqs -----------------
     model.eval()
     acc1 = acc3 = n = 0
     with torch.inference_mode():
         for s in val:
-            for p in (CTX, (len(s["ids"]) - BLOCK - 1) // 2):
+            mid = (len(s["ids"]) - BLOCK - 1) // 2
+            for p in dict.fromkeys([CTX, max(CTX, mid)]):
                 if p >= len(s["ids"]) - BLOCK - 1:
                     continue
                 c, nse, lab, pos = make_sample(s, emb, mask_vec, p)
@@ -186,11 +193,6 @@ def main():
                 acc3 += (lg.topk(3, -1).indices == lab[:, None]).any(-1).sum().item()
                 n += BLOCK
     print(f"[eval] block top1 {acc1/n:.1%} top3 {acc3/n:.1%} on {n} positions", flush=True)
-
-    os.makedirs(args.out_dir, exist_ok=True)
-    model.config.auto_map = {"AutoModel": "dflash.DFlash2DraftModel"}
-    model.save_pretrained(args.out_dir)
-    print(f"[train] saved to {args.out_dir}", flush=True)
 
 
 if __name__ == "__main__":
