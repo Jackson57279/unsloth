@@ -65,7 +65,7 @@ def build_config():
 def make_sample(seq, emb, mask_vec, p):
     """One training sample: ctx hiddens + masked block, at block start p."""
     ids = seq["ids"]
-    ctx = seq["target_hidden"][p - CTX:p].to(torch.bfloat16).cuda()  # [W, 5H]
+    ctx = seq["target_hidden"][p - CTX:p].to(torch.float32).cuda()  # [W, 5H]
     noise = torch.cat([
         emb[ids[p]].unsqueeze(0),                    # anchor token emb
         mask_vec.unsqueeze(0).expand(BLOCK - 1, -1), # mask emb x (B-1)
@@ -106,8 +106,8 @@ def main():
     args = ap.parse_args()
 
     parts = torch.load(f"{args.data_dir}/target_parts.pt")
-    emb = parts["embed"].to(torch.bfloat16).cuda()
-    head_w = parts["lm_head"].to(torch.bfloat16).cuda()
+    emb = parts["embed"].to(torch.float32).cuda()
+    head_w = parts["lm_head"].to(torch.float32).cuda()
     lm_head = lambda h: F.linear(h, head_w)  # noqa: E731 — compute_logits calls head(hidden)
     mask_vec = emb[MASK_ID]
     emb.requires_grad_(False)
@@ -122,7 +122,7 @@ def main():
     print(f"[train] {len(seqs)} train seqs, {n_val} val", flush=True)
 
     torch.manual_seed(0)
-    model = DFlash2DraftModel(build_config()).to(torch.bfloat16).cuda()
+    model = DFlash2DraftModel(build_config()).to(torch.float32).cuda()
     model.train()
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"[train] draft params: {n_params:.0f}M", flush=True)
@@ -154,20 +154,19 @@ def main():
     t0, log_loss, log_sel = time.time(), 0.0, 0.0
     for step in range(1, args.steps + 1):
         ctx, noise, labels, positions, anchors = batch(rng)
-        with torch.autocast("cuda", torch.bfloat16):
-            hidden = model(noise_embedding=noise, target_hidden=ctx,
-                           position_ids=positions)
-            logits = model.compute_logits(hidden, lm_head)
-            loss = F.cross_entropy(
-                logits[0].float(), labels[0], reduction="sum")
-            sel = selector_loss(model, hidden, logits, labels[0], anchors[0])
-            for b in range(1, ctx.shape[0]):
-                loss = loss + F.cross_entropy(
-                    logits[b].float(), labels[b], reduction="sum")
-                sel = sel + selector_loss(model, hidden[b:b+1], logits[b:b+1],
-                                          labels[b], anchors[b])
-            loss = loss / (ctx.shape[0] * BLOCK)
-            loss = loss + SEL_LAMBDA * sel / ctx.shape[0]
+        hidden = model(noise_embedding=noise, target_hidden=ctx,
+                       position_ids=positions)
+        logits = model.compute_logits(hidden, lm_head)
+        loss = F.cross_entropy(
+            logits[0].float(), labels[0], reduction="sum")
+        sel = selector_loss(model, hidden, logits, labels[0], anchors[0])
+        for b in range(1, ctx.shape[0]):
+            loss = loss + F.cross_entropy(
+                logits[b].float(), labels[b], reduction="sum")
+            sel = sel + selector_loss(model, hidden[b:b+1], logits[b:b+1],
+                                      labels[b], anchors[b])
+        loss = loss / (ctx.shape[0] * BLOCK)
+        loss = loss + SEL_LAMBDA * sel / ctx.shape[0]
         if not torch.isfinite(loss):
             nan_skips += 1
             if nan_skips > 30:
@@ -190,6 +189,8 @@ def main():
     # save first: eval must never be able to lose the trained weights
     os.makedirs(args.out_dir, exist_ok=True)
     model.config.auto_map = {"AutoModel": "dflash.DFlash2DraftModel"}
+    model = model.to(torch.bfloat16)
+    head_w = head_w.to(torch.bfloat16)
     model.save_pretrained(args.out_dir)
     print(f"[train] saved to {args.out_dir}", flush=True)
 
@@ -203,7 +204,8 @@ def main():
                 if p >= len(s["ids"]) - BLOCK - 1:
                     continue
                 c, nse, lab, pos = make_sample(s, emb, mask_vec, p)
-                h = model(noise_embedding=nse[None], target_hidden=c[None],
+                h = model(noise_embedding=nse.to(model.dtype)[None],
+                          target_hidden=c.to(model.dtype)[None],
                           position_ids=pos[None])
                 lg = model.compute_logits(h, lm_head)[0].float()
                 acc1 += (lg.argmax(-1) == lab).sum().item()
