@@ -55,6 +55,10 @@ def parse_args():
     p.add_argument("--smoke", action = "store_true",
                    help = "tiny subset + 3 steps: validates the pipeline only")
     p.add_argument("--lora_r", type = int, default = 32)
+    p.add_argument("--lora_targets", choices = ["attn", "moe"], default = None,
+                   help = "attn = q/k/v/o only (~160 adapters, fits T4); "
+                          "moe = attention + every expert gate/up/down "
+                          "(~30k adapters, needs >30GB VRAM). t4 default attn.")
     p.add_argument("--lora_alpha", type = int, default = 64)
     p.add_argument("--lr", type = float, default = 2e-4)
     p.add_argument("--offload_layers", default = None,
@@ -130,13 +134,14 @@ def main():
     )
     print(f"[model] loaded {args.model} (dtype={model.dtype})")
 
+    lora_targets = args.lora_targets or ("attn" if args.profile == "t4" else "moe")
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    if lora_targets == "moe":
+        target_modules += ["gate_proj", "up_proj", "down_proj"]
     model = FastLanguageModel.get_peft_model(
         model,
         r = args.lora_r,
-        target_modules = [
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
+        target_modules = target_modules,
         lora_alpha = args.lora_alpha,
         lora_dropout = 0,
         bias = "none",
