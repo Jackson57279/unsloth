@@ -3043,6 +3043,19 @@ class FastModel(FastBaseModel):
                 do_forced_float32 = True
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
+        if do_forced_float32 and not SUPPORTS_BFLOAT16:
+            # On GPUs without native bfloat16 (T4, V100, GTX, gfx10) the dtype probe earlier
+            # already warned "Will change to float16" - this switch overrides that message,
+            # so say what actually happened. Emulated bf16 runs far slower; users deserve
+            # the warning before they blame the wrong thing, plus the escape hatches.
+            logger.warning_once(
+                "Unsloth: this model produces NaN gradients in float16 training, so it is "
+                "loading in bfloat16 with float32 kernels instead of float16. This GPU has "
+                "no native bfloat16 support, so bfloat16 ops run emulated and training will "
+                "be much slower than on a bf16-capable GPU (Ampere / Ada / Hopper or newer). "
+                "If the model does not fit in VRAM, `offload_layers = N` swaps decoder layers "
+                "to host RAM."
+            )
         # A bf16 load of this family would otherwise drop to fp16 when vLLM refuses bf16 (forced float32 is caught in FastBaseModel).
         if (
             not do_forced_float32
