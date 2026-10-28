@@ -194,9 +194,10 @@ def main():
     model.save_pretrained(args.out_dir)
     print(f"[train] saved to {args.out_dir}", flush=True)
 
-    # --- eval: block top-1 / top-3 accuracy on held-out seqs -----------------
+    # --- eval: block containment at k=1/3/8/16 on held-out seqs --------------
     model.eval()
-    acc1 = acc3 = n = 0
+    hits = {1: 0, 3: 0, 8: 0, 16: 0}
+    n = 0
     with torch.inference_mode():
         for s in val:
             mid = (len(s["ids"]) - BLOCK - 1) // 2
@@ -208,10 +209,12 @@ def main():
                           target_hidden=c.to(model.dtype)[None],
                           position_ids=pos[None])
                 lg = model.compute_logits(h, lm_head)[0].float()
-                acc1 += (lg.argmax(-1) == lab).sum().item()
-                acc3 += (lg.topk(3, -1).indices == lab[:, None]).any(-1).sum().item()
+                for k in hits:
+                    hits[k] += (lg.topk(k, -1).indices == lab[:, None]) \
+                        .any(-1).sum().item()
                 n += BLOCK
-    print(f"[eval] block top1 {acc1/n:.1%} top3 {acc3/n:.1%} on {n} positions", flush=True)
+    msg = " ".join(f"top{k} {v/n:.1%}" for k, v in hits.items())
+    print(f"[eval] block containment: {msg} on {n} positions", flush=True)
 
 
 if __name__ == "__main__":
