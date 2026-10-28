@@ -74,6 +74,14 @@ faster than on T4 — and `offload_layers = 10` leaves ~4 GB of headroom for
 2048-token activations. Attention LoRA remains the default (MoE expert LoRA
 still needs >30 GB).
 
+Verified E2E on a real Colab L4 (`offload_layers = 20`, ~56 s/step): full
+epoch over the mix (188 steps, ~3 h, train_loss 0.81), then eval + push.
+Results on `freakyskittle/qwen36-35b-a3b-distill-lora-l4`:
+**ARC-Challenge 96% (96/100), MMLU 81% (81/100), GSM8K 40% (4/10)** —
+small-sample eval, sanity check only. Note: generation eval on the
+still-training model can fail inside compiled regions; `eval_and_push.py`
+on the saved adapter is the reliable path.
+
 ## Data mix
 
 Code-focused: ~69% of the caps are coding or code-adjacent (code
