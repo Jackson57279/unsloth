@@ -121,13 +121,22 @@ def main():
     val, seqs = seqs[:n_val], seqs[n_val:]
     print(f"[train] {len(seqs)} train seqs, {n_val} val", flush=True)
 
+    torch.manual_seed(0)
     model = DFlash2DraftModel(build_config()).to(torch.bfloat16).cuda()
     model.train()
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"[train] draft params: {n_params:.0f}M", flush=True)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.steps)
+    warm = max(50, args.steps // 20)
+
+    def lr_mult(s):
+        if s < warm:
+            return (s + 1) / warm
+        t = (s - warm) / max(1, args.steps - warm)
+        return 0.1 + 0.9 * (1 + math.cos(math.pi * t)) / 2
+
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_mult)
 
     def batch(rng):
         ctx_l, noise_l, lab_l, pos_l, anc = [], [], [], [], []
@@ -141,6 +150,7 @@ def main():
                 torch.stack(pos_l), anc)
 
     rng = random.Random(1)
+    nan_skips = 0
     t0, log_loss, log_sel = time.time(), 0.0, 0.0
     for step in range(1, args.steps + 1):
         ctx, noise, labels, positions, anchors = batch(rng)
@@ -158,6 +168,13 @@ def main():
                                           labels[b], anchors[b])
             loss = loss / (ctx.shape[0] * BLOCK)
             loss = loss + SEL_LAMBDA * sel / ctx.shape[0]
+        if not torch.isfinite(loss):
+            nan_skips += 1
+            if nan_skips > 30:
+                raise RuntimeError(f"loss not finite for {nan_skips} steps")
+            opt.zero_grad(set_to_none=True)
+            continue
+        nan_skips = 0
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
