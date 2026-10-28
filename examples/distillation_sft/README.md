@@ -1,9 +1,10 @@
-# Qwen3.6-35B-A3B distillation SFT (T4 / small-GPU)
+# Qwen3.6-35B-A3B distillation SFT (small-GPU)
 
-Finetune **Qwen3.6-35B-A3B** on a mix of distillation traces — agentic GLM-5.3
-distillation data, security reasoning traces (cybench / autopenbench / CVE
-factory / OpenVul / CTF solvers), SWE-agent trajectories, and benchmark train
-splits — from a single 16 GB GPU upward.
+Finetune **Qwen3.6-35B-A3B** on a code-heavy mix of distillation traces —
+agentic GLM-5.3 distillation data, code instruction + R1 coding CoTs,
+security reasoning traces (cybench / autopenbench / CVE factory / OpenVul /
+CTF solvers), SWE-agent trajectories, and benchmark train splits — from a
+single 16 GB GPU upward (24 GB L4 recommended for real runs).
 
 ## Which checkpoint?
 
@@ -28,7 +29,8 @@ Set `--model` accordingly (default: the abliterated repo).
   survive. Rows longer than `max_seq_length` are *dropped*, not truncated
   (a severed trace teaches the model to never finish).
 - `train.py` — QLoRA SFT. `--profile t4` for 16 GB cards (needs high-RAM host
-  for this 35B), `--profile big` for 48 GB+.
+  for this 35B), `--profile l4` for 24 GB cards (native bf16 — the
+  recommended cheap option), `--profile big` for 48 GB+.
 - `eval_and_push.py` — loads a saved adapter, runs the bounded benchmark eval
   (ARC/MMLU/GSM8K + security samples), writes the model card, and pushes to
   the Hub.
@@ -60,22 +62,39 @@ mix → training steps → adapter save. `loss 2.34 → 2.278`, ~3.5 min/step.
 - T4 has **no native bfloat16**. This family NaNs in fp16, so Unsloth loads
   emulated bf16 with float32 kernels — slower again. A `--smoke` run to
   validate the pipeline is the realistic T4 goal; for full runs use
-  `--profile big` on an L4/A100/H100 (or any bf16 GPU with ≥24 GB + offload).
+  `--profile l4`/`--profile big` on an L4/A100/H100 (any bf16 GPU with
+  ≥24 GB + offload).
+
+## L4 profile — recommended for real runs
+
+`--profile l4` targets the 24 GB Colab L4 (`colab new --gpu L4`; the L4
+shape already ships with ample host RAM, `--high-mem` is ignored). L4 has
+**native bf16** — no emulated kernels, so steps are an order of magnitude
+faster than on T4 — and `offload_layers = 10` leaves ~4 GB of headroom for
+2048-token activations. Attention LoRA remains the default (MoE expert LoRA
+still needs >30 GB).
 
 ## Data mix
+
+Code-focused: ~69% of the caps are coding or code-adjacent (code
+instruction + coding CoTs + SWE-agent + agentic GLM traces).
 
 | Source | Rows (cap) | Kind |
 |---|---|---|
 | freakyskittle/glm-5.3-distillation (private) | 3752 | agentic GLM-5.3 traces |
-| ciTy1504/security-agentic-sft-corpus | 2500 | security agent trajectories |
-| Leopo1d/OpenVul ...DeepSeek-R1-0528 | 2000 | R1-distilled vuln reasoning |
-| SecCoderX ... Cold Start | 1500 | CWE vuln detection |
-| TrueNix/ctf-solver-dataset | 1500 | CTF solver |
-| whitecircle/swe-rebench-v2-glm-5.1... | 750 | SWE-agent traces |
-| openai/gsm8k | 1500 | benchmark (math) |
-| DigitalLearningGmbH/MATH-lighteval | 1500 | benchmark (math) |
-| allenai/ai2_arc (ARC-Challenge) | 800 | benchmark (MCQA) |
-| cais/mmlu (auxiliary_train) | 1500 | benchmark (MCQA) |
+| ise-uiuc/Magicoder-OSS-Instruct-75K | 3000 | code instructions |
+| m-a-p/CodeFeedback-Filtered-Instruction | 3000 | code instructions |
+| bigcode/self-oss-instruct-sc2-exec-filter-50k | 2000 | self-instruct code (exec-filtered) |
+| open-r1/codeforces-cots (solutions_py) | 2000 | R1 competitive-programming CoTs |
+| whitecircle/swe-rebench-v2-glm-5.1... | 1500 | SWE-agent traces |
+| ciTy1504/security-agentic-sft-corpus | 1500 | security agent trajectories |
+| Leopo1d/OpenVul ...DeepSeek-R1-0528 | 1000 | R1-distilled vuln reasoning |
+| SecCoderX ... Cold Start | 800 | CWE vuln detection |
+| TrueNix/ctf-solver-dataset | 800 | CTF solver |
+| openai/gsm8k | 800 | benchmark (math) |
+| DigitalLearningGmbH/MATH-lighteval | 800 | benchmark (math) |
+| allenai/ai2_arc (ARC-Challenge) | 400 | benchmark (MCQA) |
+| cais/mmlu (auxiliary_train) | 600 | benchmark (MCQA) |
 
 Private dataset: needs `HF_TOKEN` with access to
 `freakyskittle/glm-5.3-distillation` (Colab: add it in Secrets and do
@@ -90,8 +109,10 @@ pip install "git+https://github.com/Jackson57279/unsloth.git" \
 export HF_TOKEN=hf_xxx
 
 python train.py --profile t4 --smoke      # 3-step pipeline validation
-python train.py --profile t4              # real (slow) T4 run
-python train.py --profile big --epochs 1  # recommended on A100/H100
+python train.py --profile l4 --epochs 1 --eval \
+    --push_to_hub <user>/repo             # recommended real run (L4)
+python train.py --profile t4              # real (very slow) T4 run
+python train.py --profile big --epochs 1  # A100/H100
 ```
 
 Useful flags: `--max_seq_length`, `--epochs`, `--max_steps`, `--lora_r`,

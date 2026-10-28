@@ -26,6 +26,11 @@ Sources
     CTF solver SFT `messages` (chat format already).
 - whitecircle/swe-rebench-v2-glm-5.1-pi-agent-successful-traces
     Successful GLM-5.1 SWE-agent traces. `messages` + `tools` columns.
+- Code instruction / reasoning (the dominant block of the mix):
+    ise-uiuc/Magicoder-OSS-Instruct-75K (problem/solution),
+    m-a-p/CodeFeedback-Filtered-Instruction (query/answer),
+    bigcode/self-oss-instruct-sc2-exec-filter-50k (instruction/response),
+    open-r1/codeforces-cots config `solutions_py` (R1 CoTs, `messages`).
 - Benchmarks (train splits only, formatted as QA chat):
     openai/gsm8k, DigitalLearningGmbH/MATH-lighteval,
     allenai/ai2_arc (ARC-Challenge), cais/mmlu (auxiliary_train).
@@ -96,53 +101,78 @@ DATASET_SPECS: List[Dict[str, Any]] = [
         name = "ciTy1504/security-agentic-sft-corpus",
         kind = "city1504_turns",
         loader = "jsonl_files",
-        max_rows = 2500,
+        max_rows = 1500,
         desc = "agentic security trajectories (cybench/autopenbench/CVE)",
     ),
     dict(
         name = "Leopo1d/OpenVul_Distilled_Vulnerability_Reasoning_CoTs_from_DeepSeek-R1-0528",
         kind = "openvul",
-        max_rows = 2000,
+        max_rows = 1000,
         desc = "R1-distilled vulnerability reasoning CoTs",
     ),
     dict(
         name = "SecCoderX/SecCoderX_Reasoning_Vulnerability_Detection_SFT_Cold_Start_Dataset",
         kind = "instruction_output",
-        max_rows = 1500,
+        max_rows = 800,
         desc = "CWE vulnerability-detection reasoning",
     ),
     dict(
         name = "TrueNix/ctf-solver-dataset",
         kind = "messages",
-        max_rows = 1500,
+        max_rows = 800,
         desc = "CTF solver traces",
+    ),
+    # --- code instruction / reasoning: the dominant block ---
+    dict(
+        name = "ise-uiuc/Magicoder-OSS-Instruct-75K",
+        kind = "pair", fields = ("problem", "solution"),
+        max_rows = 3000,
+        desc = "Magicoder OSS-Instruct code instructions",
+    ),
+    dict(
+        name = "m-a-p/CodeFeedback-Filtered-Instruction",
+        kind = "pair", fields = ("query", "answer"),
+        max_rows = 3000,
+        desc = "CodeFeedback filtered code instructions",
+    ),
+    dict(
+        name = "bigcode/self-oss-instruct-sc2-exec-filter-50k",
+        kind = "pair", fields = ("instruction", "response"),
+        max_rows = 2000,
+        desc = "StarCoder2 self-instruct, execution-filtered",
+    ),
+    dict(
+        name = "open-r1/codeforces-cots", config = "solutions_py", split = "train",
+        kind = "messages",
+        max_rows = 2000,
+        desc = "R1-distilled competitive programming CoTs",
     ),
     # --- other agent traces ---
     dict(
         name = "whitecircle/swe-rebench-v2-glm-5.1-pi-agent-successful-traces",
         kind = "messages",
-        max_rows = 750,
+        max_rows = 1500,
         desc = "GLM-5.1 SWE-agent successful traces",
     ),
     # --- benchmarks (train splits, formatted as chat) ---
     dict(
         name = "openai/gsm8k", config = "main", split = "train",
-        kind = "gsm8k", max_rows = 1500,
+        kind = "gsm8k", max_rows = 800,
         desc = "GSM8K math word problems",
     ),
     dict(
         name = "DigitalLearningGmbH/MATH-lighteval", config = "default", split = "train",
-        kind = "math_lighteval", max_rows = 1500,
+        kind = "math_lighteval", max_rows = 800,
         desc = "MATH competition problems",
     ),
     dict(
         name = "allenai/ai2_arc", config = "ARC-Challenge", split = "train",
-        kind = "arc", max_rows = 800,
+        kind = "arc", max_rows = 400,
         desc = "ARC-Challenge science MCQA",
     ),
     dict(
         name = "cais/mmlu", config = "all", split = "auxiliary_train",
-        kind = "mmlu", max_rows = 1500,
+        kind = "mmlu", max_rows = 600,
         desc = "MMLU auxiliary train QA",
     ),
 ]
@@ -267,6 +297,16 @@ def norm_instruction_output(row, spec):
     }
 
 
+def norm_pair(row, spec):
+    """Generic user/assistant pair; spec['fields'] names the two columns
+    (e.g. problem/solution, query/answer, instruction/response)."""
+    uk, ak = spec.get("fields", ("instruction", "output"))
+    u, a = row.get(uk), row.get(ak)
+    if not u or not a or not isinstance(u, str) or not isinstance(a, str):
+        return None
+    return {"messages": [_msg("user", u.strip()), _msg("assistant", a.strip())]}
+
+
 def norm_gsm8k(row, spec):
     q, a = row.get("question"), row.get("answer")
     if not q or not a:
@@ -317,6 +357,7 @@ NORMALIZERS: Dict[str, Callable] = {
     "city1504_turns": norm_city1504_turns,
     "openvul": norm_openvul,
     "instruction_output": norm_instruction_output,
+    "pair": norm_pair,
     "gsm8k": norm_gsm8k,
     "math_lighteval": norm_math_lighteval,
     "arc": norm_arc,

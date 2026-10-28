@@ -45,9 +45,10 @@ def parse_args():
     )
     p.add_argument(
         "--profile",
-        choices = ["t4", "big"],
+        choices = ["t4", "l4", "big"],
         default = "t4",
-        help = "t4: 16GB VRAM profile. big: >=48GB VRAM profile.",
+        help = "t4: 16GB VRAM, emulated bf16. l4: 24GB VRAM, native bf16. "
+               "big: >=48GB VRAM profile.",
     )
     p.add_argument("--max_seq_length", type = int, default = None)
     p.add_argument("--epochs", type = float, default = 1.0)
@@ -90,6 +91,12 @@ def main():
         max_seq_length = args.max_seq_length or 2048
         batch_size, grad_accum = 1, 16
         default_offload = 24
+    elif args.profile == "l4":
+        # 24GB VRAM: ~16GB 4-bit base after swapping 10 layers, ~4GB for
+        # 2048-token logits/activations, native bf16 so no emulated kernels.
+        max_seq_length = args.max_seq_length or 2048
+        batch_size, grad_accum = 1, 16
+        default_offload = 10
     else:
         max_seq_length = args.max_seq_length or 4096
         batch_size, grad_accum = 2, 8
@@ -134,7 +141,9 @@ def main():
     )
     print(f"[model] loaded {args.model} (dtype={model.dtype})")
 
-    lora_targets = args.lora_targets or ("attn" if args.profile == "t4" else "moe")
+    lora_targets = args.lora_targets or (
+        "attn" if args.profile in ("t4", "l4") else "moe"
+    )
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
     if lora_targets == "moe":
         target_modules += ["gate_proj", "up_proj", "down_proj"]
