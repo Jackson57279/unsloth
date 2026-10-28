@@ -33,8 +33,49 @@ Sources
 
 from __future__ import annotations
 
+import json
 import random
 from typing import Any, Callable, Dict, List, Optional
+
+
+def _clean_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Coerce tool_calls into the shape the Qwen chat template expects.
+
+    The template iterates ``tool_call.arguments | items`` and reads
+    ``tool_call.name`` directly. OpenAI-style traces instead nest
+    ``{"function": {"name": ..., "arguments": ...}}`` and encode
+    ``arguments`` as a JSON *string* - both crash the Jinja render.
+    """
+    out = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        m = dict(m)
+        tcs = m.get("tool_calls")
+        if tcs:
+            fixed = []
+            for tc in tcs:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                if isinstance(fn, dict):
+                    tc = {
+                        **tc,
+                        "name": tc.get("name") or fn.get("name"),
+                        "arguments": tc.get("arguments", fn.get("arguments")),
+                    }
+                args = tc.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = None
+                if args is not None and not isinstance(args, dict):
+                    args = {"value": args}
+                fixed.append({**tc, "arguments": args if args is not None else {}})
+            m["tool_calls"] = fixed
+        out.append(m)
+    return out
 
 # ---------------------------------------------------------------------------
 # Mix specification. `max_rows` caps each source BEFORE rendering; `weight`
@@ -278,11 +319,13 @@ def build_chat_dataset(
             continue
 
         texts = []
+        skipped = 0
         for item in kept:
+            messages = _clean_messages(item["messages"])
             try:
                 texts.append(
                     tokenizer.apply_chat_template(
-                        item["messages"],
+                        messages,
                         tools = item.get("tools"),
                         tokenize = False,
                         add_generation_prompt = False,
@@ -293,16 +336,27 @@ def build_chat_dataset(
                 )
             except TypeError:
                 # Older transformers without preserve_thinking kwarg.
-                texts.append(
-                    tokenizer.apply_chat_template(
-                        item["messages"],
-                        tokenize = False,
-                        add_generation_prompt = False,
+                try:
+                    texts.append(
+                        tokenizer.apply_chat_template(
+                            messages,
+                            tokenize = False,
+                            add_generation_prompt = False,
+                        )
                     )
-                )
+                except Exception:
+                    skipped += 1
+            except Exception:
+                # Unrenderable row (bad tool_calls, odd content) - skip it
+                # rather than killing the whole mix.
+                skipped += 1
         rendered.append(texts)
         if verbose:
-            print(f"[data] {spec['name']}: {len(texts)} rows ({spec['desc']})")
+            print(
+                f"[data] {spec['name']}: {len(texts)} rows"
+                + (f" (+{skipped} unrenderable skipped)" if skipped else "")
+                + f" ({spec['desc']})"
+            )
 
     if not rendered:
         raise RuntimeError("No dataset rows survived normalization.")
