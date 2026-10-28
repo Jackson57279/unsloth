@@ -27,23 +27,39 @@ Set `--model` accordingly (default: the abliterated repo).
   `preserve_thinking=True`, so `reasoning_content`, `tool_calls` and `tools`
   survive. Rows longer than `max_seq_length` are *dropped*, not truncated
   (a severed trace teaches the model to never finish).
-- `train.py` — QLoRA SFT. `--profile t4` for 16 GB cards, `--profile big` for
-  48 GB+.
+- `train.py` — QLoRA SFT. `--profile t4` for 16 GB cards (needs high-RAM host
+  for this 35B), `--profile big` for 48 GB+.
+- `eval_and_push.py` — loads a saved adapter, runs the bounded benchmark eval
+  (ARC/MMLU/GSM8K + security samples), writes the model card, and pushes to
+  the Hub.
 - `../notebooks/Qwen3_6_35B_A3B_T4_Distillation_SFT.ipynb` — the same pipeline
   as a Colab notebook.
 
-## T4 reality check
+## T4 reality check — verified E2E on a real T4
+
+A 3-step smoke run was executed end-to-end on a real **Tesla T4 (Colab
+high-RAM shape, ~51 GB host RAM)**: model load → LoRA attach → 10-source data
+mix → training steps → adapter save. `loss 2.34 → 2.278`, ~3.5 min/step.
 
 - The model is a **multimodal hybrid MoE** (`Qwen3_5MoeForConditionalGeneration`,
   gated-deltanet linear attention + full attention + 256 experts). Loaded
   `text_only=True`, which drops the vision tower.
-- 4-bit weights alone are ~18–20 GB — **larger than T4 VRAM**. `offload_layers`
-  (default `auto`) swaps decoder layers between host RAM and GPU
-  (Unsloth BlockSwap). It works, but steps are PCIe-copy-bound — think
-  seconds/step, not ms.
+- 4-bit weights alone are ~19 GB — **larger than T4 VRAM**. `offload_layers`
+  swaps decoder layers between host RAM and GPU (Unsloth BlockSwap).
+- **Standard 12 GB-RAM T4 cannot host-swap this model**: the load transient
+  (weight streaming + quantization + swap buffers) exceeds the ~11.5 GB
+  cgroup limit. You need the **high-RAM T4 shape (~51 GB host)** —
+  `colab new --gpu T4 --high-mem` or Runtime > Change runtime type.
+- **Use `--lora_targets attn` on T4.** Targeting MoE expert
+  `gate/up/down_proj` attaches LoRA to ~256 experts x 40 layers — ~30k
+  adapter modules (~9 GB) and instant OOM. Attention-only LoRA is 6.9M
+  params. `--lora_targets moe` needs >30 GB VRAM.
+- **`dataset_num_proc = 1` is required.** `datasets.map`/`filter` (and TRL's
+  tokenizer) fork workers that copy-on-write duplicate the resident model —
+  4+ copies of ~12 GB blows any host limit.
 - T4 has **no native bfloat16**. This family NaNs in fp16, so Unsloth loads
   emulated bf16 with float32 kernels — slower again. A `--smoke` run to
-  validate the pipeline is very reasonable on T4; for full runs use
+  validate the pipeline is the realistic T4 goal; for full runs use
   `--profile big` on an L4/A100/H100 (or any bf16 GPU with ≥24 GB + offload).
 
 ## Data mix
@@ -79,4 +95,11 @@ python train.py --profile big --epochs 1  # recommended on A100/H100
 ```
 
 Useful flags: `--max_seq_length`, `--epochs`, `--max_steps`, `--lora_r`,
-`--offload_layers N|auto`, `--per_source_cap`, `--push_to_hub repo/id`.
+`--lora_targets attn|moe`, `--offload_layers N|auto`, `--offload_embedding`,
+`--per_source_cap`, `--push_to_hub repo/id`, `--eval`.
+
+```bash
+# evaluate a saved adapter and publish it
+python eval_and_push.py --adapter outputs/qwen36-distill/lora \
+    --repo <user>/qwen36-35b-a3b-distill-lora
+```
