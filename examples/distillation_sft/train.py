@@ -60,6 +60,8 @@ def parse_args():
     p.add_argument("--offload_layers", default = None,
                    help = "N layers to host-swap (t4 default 24, big default 0). "
                           "'auto' cannot plan this checkpoint.")
+    p.add_argument("--offload_embedding", action = "store_true",
+                   help = "also host-swap the input embedding (~1GB)")
     p.add_argument("--per_source_cap", type = int, default = None,
                    help = "override max_rows for every dataset spec")
     p.add_argument("--output_dir", default = "outputs/qwen36-distill")
@@ -114,6 +116,9 @@ def main():
     from unsloth import FastLanguageModel, is_bfloat16_supported
     import torch
 
+    load_kwargs = {}
+    if args.offload_embedding:
+        load_kwargs["offload_embedding"] = True
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,
         max_seq_length = max_seq_length,
@@ -121,6 +126,7 @@ def main():
         load_in_4bit = True,
         text_only = True,  # drop the vision tower: text distillation only
         offload_layers = offload_layers,
+        **load_kwargs,
     )
     print(f"[model] loaded {args.model} (dtype={model.dtype})")
 
