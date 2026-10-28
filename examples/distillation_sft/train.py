@@ -231,6 +231,9 @@ def main():
     adapter_dir = os.path.join(args.output_dir, "lora")
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(adapter_dir)
+    if results_path:
+        import shutil
+        shutil.copy2(results_path, os.path.join(adapter_dir, "results.json"))
 
     # Model card into the adapter dir so it uploads with the weights.
     import model_card
