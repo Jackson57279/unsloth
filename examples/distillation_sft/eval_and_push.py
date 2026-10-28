@@ -28,7 +28,8 @@ def parse_args():
     p.add_argument("--offload_layers", type = int, default = 24)
     p.add_argument("--arc_n", type = int, default = 40)
     p.add_argument("--mmlu_n", type = int, default = 40)
-    p.add_argument("--gsm8k_n", type = int, default = 8)
+    p.add_argument("--gsm8k_n", type = int, default = 4)
+    p.add_argument("--gsm8k_max_new", type = int, default = 768)
     p.add_argument("--private", action = "store_true")
     return p.parse_args()
 
@@ -59,6 +60,7 @@ def main():
     results = eval_bench.run_eval(
         model, tokenizer,
         arc_n = args.arc_n, mmlu_n = args.mmlu_n, gsm8k_n = args.gsm8k_n,
+        gsm8k_max_new = args.gsm8k_max_new,
     )
     out_dir = os.path.dirname(args.adapter) or "."
     results_path = os.path.join(out_dir, "results.json")

@@ -40,6 +40,12 @@ def _gen(model, tokenizer, messages, max_new_tokens, temperature=0.0):
 
 
 def _mcqa_accuracy(model, tokenizer, rows, letters=("A", "B", "C", "D")):
+    """Score options by next-token logprob, not generation.
+
+    Qwen3.6 is a thinking model: `generate(max_new_tokens=8)` only produces
+    the opening of a `<think>` block and never reaches the answer letter, so
+    generative scoring reports a bogus 0%. One forward pass per question.
+    """
     labels = "ABCDEFGH"
     correct = 0
     for q, choices, ans in rows:
@@ -47,12 +53,23 @@ def _mcqa_accuracy(model, tokenizer, rows, letters=("A", "B", "C", "D")):
         for i, c in enumerate(choices):
             lines.append(f"{labels[i]}. {c}")
         lines.append("\nAnswer with the letter of the correct option.")
-        text = _gen(
-            model, tokenizer, [{"role": "user", "content": "\n".join(lines)}],
-            max_new_tokens=8,
-        )
-        m = re.search(r"[A-H]", text)
-        if m and labels.index(m.group(0)) == ans:
+        ids = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "\n".join(lines)}],
+            tokenize = True,
+            add_generation_prompt = True,
+            return_tensors = "pt",
+        ).to(model.device)
+        with torch.inference_mode():
+            logits = model(ids).logits[0, -1]
+        cands = []
+        for i in range(len(choices)):
+            # accept the letter with or without a leading space
+            toks = set(
+                tokenizer.encode(" " + labels[i], add_special_tokens = False)
+                + tokenizer.encode(labels[i], add_special_tokens = False)
+            )
+            cands.append(max(float(logits[t]) for t in toks if t < logits.shape[-1]))
+        if cands.index(max(cands)) == ans:
             correct += 1
     return correct, len(rows)
 
@@ -63,6 +80,7 @@ def run_eval(
     arc_n: int = 50,
     mmlu_n: int = 50,
     gsm8k_n: int = 20,
+    gsm8k_max_new: int = 768,
     seed: int = 3407,
 ) -> Dict[str, Any]:
     from datasets import load_dataset
@@ -105,7 +123,7 @@ def run_eval(
         for r in ds:
             text = _gen(
                 model, tokenizer, [{"role": "user", "content": r["question"]}],
-                max_new_tokens=256,
+                max_new_tokens=gsm8k_max_new,
             )
             want = re.search(r"####\s*(-?[\d,]+)", r["answer"])
             got = re.search(r"answer is\D*(-?[\d,]+)", text, re.I) or re.search(
