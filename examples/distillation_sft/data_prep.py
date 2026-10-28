@@ -240,17 +240,29 @@ def _msg(role: str, content: Optional[str], **extra) -> Dict[str, Any]:
     return m
 
 
+def _maybe_json(value):
+    """Some sources store messages/tools as JSON-encoded strings rather than
+    real lists (e.g. swe-rebench). Parse them; leave real lists alone."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+    return value
+
+
 def norm_messages(row, spec):
     """Already chat-shaped (`messages` column). Keeps reasoning_content /
     tool_calls / name / tool_call_id - the Qwen3.6 template reads them."""
-    msgs = row.get("messages")
+    msgs = _maybe_json(row.get("messages"))
     if not msgs or not isinstance(msgs, (list, tuple)):
         return None
     out = {"messages": [dict(m) for m in msgs if isinstance(m, dict) and m.get("role")]}
     if not out["messages"]:
         return None
-    if row.get("tools"):
-        out["tools"] = row["tools"]
+    tools = _maybe_json(row.get("tools"))
+    if tools:
+        out["tools"] = tools
     return out
 
 
