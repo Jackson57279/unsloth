@@ -389,8 +389,21 @@ def build_chat_dataset(
 
         texts = []
         skipped = 0
+        # Pre-render cap: rows far beyond max_seq_length would be filtered
+        # post-tokenize anyway; rendering a 20k-message trace first costs GBs
+        # of RAM. ~4 chars/token -> 6x chars is a strict superset of the cap.
+        char_cap = max_seq_length * 6
         for item in kept:
             messages = _clean_messages(item["messages"])
+            chars = sum(
+                len(v) for m in messages for v in m.values()
+                if isinstance(v, str)
+            )
+            if item.get("tools"):
+                chars += len(json.dumps(item["tools"]))
+            if chars > char_cap:
+                skipped += 1
+                continue
             try:
                 texts.append(
                     tokenizer.apply_chat_template(
@@ -448,8 +461,10 @@ def build_chat_dataset(
         }
 
     before = len(ds)
-    ds = ds.map(fits, batched = True, batch_size = 256, num_proc = 4)
-    ds = ds.filter(lambda x: x["fits"], num_proc = 4)
+    # num_proc stays 1: forking workers while a multi-GB model is resident
+    # copy-on-write duplicates it and can blow the host cgroup limit.
+    ds = ds.map(fits, batched = True, batch_size = 256)
+    ds = ds.filter(lambda x: x["fits"])
     ds = ds.remove_columns("fits")
     if verbose:
         print(
