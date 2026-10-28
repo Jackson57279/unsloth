@@ -15,14 +15,17 @@ T4 (16 GB) notes:
   * 4-bit 35B-A3B ~= 18-20 GB - does NOT fit in VRAM. `offload_layers` swaps
     decoder layers to host RAM (BlockSwap). Works, but every step copies
     experts over PCIe, so expect ~seconds per step, not milliseconds.
+    NOTE: offload_layers="auto" cannot plan this checkpoint (prepared config);
+    pass an explicit count (T4 profile defaults to 24 of 40 layers).
   * T4 has no native bf16. This model's GDN layers NaN in float16, so Unsloth
-    loads emulated bfloat16 with float32 kernels - slower still. Fine for a
-    smoke run; for real training use the `big` profile on an L4/A100/H100.
+    loads emulated bfloat16 with float32 kernels - slower still. Standard
+    Colab T4 RAM is only ~12.5 GB; if the host OOMs, lower --offload_layers
+    or use a high-RAM/24GB+ GPU (L4 also gives native bf16).
 
 Examples:
   python train.py --profile t4 --smoke          # load + a few steps on T4
   python train.py --profile t4                  # real (slow) T4 run
-  python train.py --profile big --epochs 1      # A100/H100-class run
+  python train.py --profile big --epochs 1 --eval --push_to_hub you/repo
 """
 
 from __future__ import annotations
@@ -54,13 +57,21 @@ def parse_args():
     p.add_argument("--lora_r", type = int, default = 32)
     p.add_argument("--lora_alpha", type = int, default = 64)
     p.add_argument("--lr", type = float, default = 2e-4)
-    p.add_argument("--offload_layers", default = "auto",
-                   help = "N layers to host-swap, or 'auto'. T4 needs this.")
+    p.add_argument("--offload_layers", default = None,
+                   help = "N layers to host-swap (t4 default 24, big default 0). "
+                          "'auto' cannot plan this checkpoint.")
     p.add_argument("--per_source_cap", type = int, default = None,
                    help = "override max_rows for every dataset spec")
     p.add_argument("--output_dir", default = "outputs/qwen36-distill")
     p.add_argument("--push_to_hub", default = None,
-                   help = "optional HF repo id for the merged adapter")
+                   help = "HF repo id (e.g. you/qwen36-distill-lora); pushes "
+                          "the adapter plus a model card with benchmark results")
+    p.add_argument("--eval", action = "store_true",
+                   help = "run bounded benchmark eval after training "
+                          "(ARC/MMLU/GSM8K slices + security samples)")
+    p.add_argument("--eval_arc", type = int, default = 50)
+    p.add_argument("--eval_mmlu", type = int, default = 50)
+    p.add_argument("--eval_gsm8k", type = int, default = 20)
     p.add_argument("--seed", type = int, default = 3407)
     return p.parse_args()
 
@@ -72,9 +83,17 @@ def main():
     if args.profile == "t4":
         max_seq_length = args.max_seq_length or 2048
         batch_size, grad_accum = 1, 16
+        default_offload = 24
     else:
         max_seq_length = args.max_seq_length or 4096
         batch_size, grad_accum = 2, 8
+        default_offload = 0
+
+    offload_layers = args.offload_layers
+    if offload_layers is None:
+        offload_layers = default_offload
+    elif offload_layers != "auto":
+        offload_layers = int(offload_layers)
 
     specs = data_prep.DATASET_SPECS
     if args.smoke:
@@ -94,10 +113,6 @@ def main():
     # ---------------------------------------------------------------- model
     from unsloth import FastLanguageModel, is_bfloat16_supported
     import torch
-
-    offload_layers = args.offload_layers
-    if offload_layers != "auto":
-        offload_layers = int(offload_layers)
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,
@@ -173,14 +188,64 @@ def main():
 
     stats = trainer.train()
     print(stats.metrics)
+    train_stats = dict(stats.metrics)
+
+    # ---------------------------------------------------------------- eval
+    results_path = None
+    if args.eval:
+        import eval_bench
+        results = eval_bench.run_eval(
+            model, tokenizer,
+            arc_n = args.eval_arc, mmlu_n = args.eval_mmlu,
+            gsm8k_n = args.eval_gsm8k, seed = args.seed,
+        )
+        results_path = os.path.join(args.output_dir, "results.json")
+        os.makedirs(args.output_dir, exist_ok = True)
+        import json
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent = 2)
+        print(f"[eval] wrote {results_path}")
 
     # ---------------------------------------------------------------- save
-    model.save_pretrained(os.path.join(args.output_dir, "lora"))
-    tokenizer.save_pretrained(os.path.join(args.output_dir, "lora"))
+    adapter_dir = os.path.join(args.output_dir, "lora")
+    model.save_pretrained(adapter_dir)
+    tokenizer.save_pretrained(adapter_dir)
+
+    # Model card into the adapter dir so it uploads with the weights.
+    import model_card
+    card = model_card.build_model_card(
+        repo_id = args.push_to_hub or "qwen3.6-35b-a3b-distill-lora",
+        base_model = args.model,
+        results_path = results_path,
+        train_stats = train_stats,
+        dataset_specs = specs,
+        hyperparams = {
+            "method": "QLoRA SFT (4-bit base, LoRA adapters)",
+            "lora_r": args.lora_r, "lora_alpha": args.lora_alpha,
+            "learning_rate": args.lr,
+            "max_seq_length": max_seq_length,
+            "batch_size x grad_accum": f"{batch_size} x {grad_accum}",
+            "epochs": args.epochs,
+            "packing": True,
+            "offload_layers": offload_layers,
+        },
+        hardware = _gpu_name(),
+    )
+    with open(os.path.join(adapter_dir, "README.md"), "w") as f:
+        f.write(card)
 
     if args.push_to_hub:
         model.push_to_hub(args.push_to_hub, token = token)
         tokenizer.push_to_hub(args.push_to_hub, token = token)
+        print(f"[hub] pushed adapter + model card to {args.push_to_hub}")
+
+
+def _gpu_name():
+    try:
+        import torch
+        return torch.cuda.get_device_name(0)
+    except Exception:
+        return "unknown GPU"
 
 
 if __name__ == "__main__":
