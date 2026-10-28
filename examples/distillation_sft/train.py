@@ -226,6 +226,12 @@ def main():
         with open(results_path, "w") as f:
             json.dump(results, f, indent = 2)
         print(f"[eval] wrote {results_path}")
+        if any(isinstance(v, dict) and "error" in v for v in results.values()):
+            print(
+                "[eval] some sections failed (generation on a post-training "
+                "model can hit compiled-graph issues). Re-run eval on the "
+                "saved adapter with eval_and_push.py for complete results."
+            )
 
     # ---------------------------------------------------------------- save
     adapter_dir = os.path.join(args.output_dir, "lora")
