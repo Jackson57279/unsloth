@@ -194,7 +194,10 @@ def _load_jsonl_files_tolerant(spec, token = None):
                     continue
     if not rows:
         raise RuntimeError(f"no .jsonl rows loaded from {repo}")
-    return Dataset.from_list(rows)
+    # Plain list, not Dataset: the files' schemas disagree (e.g. `score`
+    # is int in one file and 'payments+app-owners' in another), so a
+    # uniform pyarrow table can't be built. Normalizers only need `turns`.
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +371,12 @@ def build_chat_dataset(
             continue
 
         n = min(spec.get("max_rows", len(ds)), len(ds))
-        rows = ds.shuffle(seed = seed).select(range(n)) if len(ds) > n else ds
+        if isinstance(ds, list):
+            rnd = random.Random(seed)
+            rnd.shuffle(ds)
+            rows = ds[:n]
+        else:
+            rows = ds.shuffle(seed = seed).select(range(n)) if len(ds) > n else ds
 
         kept = []
         for row in rows:
