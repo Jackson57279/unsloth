@@ -175,6 +175,7 @@ def main():
         args = SFTConfig(
             dataset_text_field = "text",
             max_length = max_seq_length,
+            dataset_num_proc = 1,  # forked workers CoW-duplicate the model
             packing = True,
             per_device_train_batch_size = batch_size,
             gradient_accumulation_steps = grad_accum,
