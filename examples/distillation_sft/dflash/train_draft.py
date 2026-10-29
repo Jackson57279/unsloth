@@ -103,6 +103,7 @@ def main():
     ap.add_argument("--steps", type=int, default=1500)
     ap.add_argument("--bs", type=int, default=16)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--save_every", type=int, default=0)
     args = ap.parse_args()
 
     parts = torch.load(f"{args.data_dir}/target_parts.pt")
@@ -192,6 +193,12 @@ def main():
             print(f"[train] {step}/{args.steps} loss {log_loss/50:.3f} "
                   f"sel {log_sel/50:.3f} ({el/step:.2f}s/st)", flush=True)
             log_loss, log_sel = 0.0, 0.0
+        if args.save_every and step % args.save_every == 0 and step < args.steps:
+            os.makedirs(args.out_dir, exist_ok=True)
+            torch.save({"step": step, "model": model.state_dict(),
+                        "opt": opt.state_dict()},
+                       f"{args.out_dir}/checkpoint.pt")
+            print(f"[train] checkpoint saved at step {step}", flush=True)
 
     # save first: eval must never be able to lose the trained weights
     os.makedirs(args.out_dir, exist_ok=True)
