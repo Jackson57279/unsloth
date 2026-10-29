@@ -22,6 +22,7 @@ import data_prep  # noqa: E402
 
 
 def main():
+    os.makedirs(OUT, exist_ok=True)
     tok = AutoTokenizer.from_pretrained(MODEL)
     print("[cap] tokenizer ok", flush=True)
 
@@ -49,7 +50,6 @@ def main():
     texts = [r["text"] for r in ds]
     print(f"[cap] corpus: {len(texts)} rendered rows", flush=True)
 
-    os.makedirs(OUT, exist_ok=True)
     t0 = time.time()
     shard, shard_i, done = [], 0, 0
     with torch.inference_mode():
