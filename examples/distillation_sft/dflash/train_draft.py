@@ -114,8 +114,8 @@ def main():
 
     seqs = []
     for f in sorted(glob.glob(f"{args.data_dir}/shard_*.pt")):
-        seqs.extend(torch.load(f, weights_only=False))
-    seqs = [s for s in seqs if len(s["ids"]) > CTX + BLOCK + 2]
+        seqs.extend(s for s in torch.load(f, weights_only=False)
+                    if len(s["ids"]) > CTX + BLOCK + 2)
     random.Random(0).shuffle(seqs)
     n_val = max(8, len(seqs) // 20)
     val, seqs = seqs[:n_val], seqs[n_val:]
