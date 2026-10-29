@@ -123,6 +123,13 @@ def main():
 
     torch.manual_seed(0)
     model = DFlash2DraftModel(build_config()).to(torch.float32).cuda()
+    # GroupedDynamicCausalConv.base_kernel is nn.Parameter(torch.empty(...)):
+    # _init_weights never touches it, so fresh inits read uninitialized memory
+    # (nondeterministic NaNs). Initialize deterministically.
+    with torch.no_grad():
+        for layer in model.layers:
+            for conv in (layer.attention_conv, layer.mlp_conv):
+                torch.nn.init.normal_(conv.base_kernel, mean=0.0, std=0.02)
     model.train()
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"[train] draft params: {n_params:.0f}M", flush=True)
